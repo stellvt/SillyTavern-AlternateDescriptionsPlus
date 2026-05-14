@@ -1,79 +1,89 @@
-# SillyTavern Alternate Fields
-*Formerly "Alternate Descriptions"*
+# SillyTavern Alternate Descriptions Plus
+
+_A fork / functional extension of **SillyTavern-AlternateDescriptions**_
 
 ## Overview
 
-A SillyTavern extension that allows you to save and manage multiple versions of character fields within a single character card. Perfect for experimenting with different character concepts without losing your original work.
+A SillyTavern extension that allows you to save and manage multiple versions of supported text fields.
 
-**Supported Fields**: Description, Personality, Scenario, Example Dialogue, Main Prompt, Post-History Instructions
+It follows the original Alternate Descriptions workflow and extends it with support for **user persona description** alternates.
+
+**Supported Character Fields**: Description, Personality, Scenario, Example Dialogue, Main Prompt, Post-History Instructions  
+**Supported Persona Fields**: Persona Description
 
 ## Features
 
-- **Multi-field support** - Works with 6 different character fields
-- **Auto-save** - Automatically saves current field content on first use
-- **Visual indicators** - Shows which alternate is currently active & warns before switching with unsaved changes
+- **Character + Persona support** - Manage alternates for both card fields and persona description
+- **Auto-save** - Automatically saves current field content on first use (optional)
+- **Visual indicators** - Shows which alternate is currently active and warns before switching with unsaved changes
 - **Token counting** - Shows token count for each alternate
-- **Slash command support** - Switch alternates via `/altfield` command
-- **Portable** - Data stored in character card, stays with character
+- **Duplicate + quick save** - Duplicate an entry or save current field content in one click
+- **Slash command support** - Switch alternates via slash commands
+- **Compatibility-first** - Character field storage stays compatible with the original Alternate Descriptions format
 
 ## Installation
 
-1. Open SillyTavern
-2. Go to **Extensions** → **Install extension**  
-3. Enter the repository URL: `https://github.com/nbrown725/SillyTavern-AlternateDescriptions`
-4. Click **Download**
-5. The extension will add "Alt. [Field]" buttons above supported fields
+- Open SillyTavern
+- Go to **Extensions** → **Install extension**
+- Install from your repository URL (or place it in your local `third-party` folder)
+- Reload SillyTavern
+
+The extension adds `Alt. ...` buttons near supported fields.
 
 ## Usage
 
 ### Basic Usage
-1. **Open the manager**: Click the "Alt. [Field]" button above any supported field in the character editor
-2. **Add new alternates**: Click the "Add New" button to create a new alternate (duplicates current content)
-3. **Switch alternates**: Click the "Use" button to switch to a different alternate
-4. **Edit alternates**: Modify titles and content directly in the popup
+
+- **Open manager**: Click `Alt. ...` near a supported field
+- **Add alternates**: Use **Add New**
+- **Save current content**: Use **Save Current**
+- **Switch alternates**: Use **Use**
+- **Duplicate entries**: Use **Duplicate**
+- **Delete entries**: Use **Delete**
+- **Edit entries**: Change title/content directly in the popup
 
 ### Slash Command Usage
 
-The `/altfield` command allows quick switching between alternates:
+#### Character fields
 
-```
+```text
 /altfield field=<field_name> name=<alternate_name>
 ```
 
-**Arguments:**
-- `field` - The field type (description, personality, scenario, etc.) - **Required**
-- `name` - The name of the alternate to switch to - **Optional**
+- `field` - Character field key (required)
+- `name` - Alternate title (optional)
 
-**Examples:**
-```
-# Switch to specific alternate
+Examples:
+
+```text
 /altfield field=description name="Description #1"
-
-# Switch to random alternate (omit name)
 /altfield field=scenario
 ```
 
-Both arguments support autocomplete - the `field` argument must be specified for the `name` argument to autocomplete.
+If `name` is omitted, a random alternate is selected.
 
-## ⚠ Important Notes
+#### Persona description
 
-- **Manual saving required**: The extension doesn't auto-save changes when switching alternates
-- **Warning system**: Visual alerts and confirmation dialogs protect against losing unsaved work
-- **Overwrites current content**: Switching alternates will replace current field content
-
-## Data Storage
-
-Alternate fields are stored in the character card under:
-```
-extensions.alternate_fields.[field_saveKey]
+```text
+/altpersona name=<alternate_name>
 ```
 
-This means data travels with the character card when shared. Delete fields you don't want others seeing before sharing.
+Example:
 
-## Acknowledgements
+```text
+/altpersona name="Persona Description #1"
+/altpersona
+```
 
-This extension is based on patterns from the [Group Greetings extension](https://github.com/SillyTavern/Extension-GroupGreetings) by the SillyTavern team.
+If `name` is omitted, a random alternate is selected.
 
-## License
+## Important Notes
 
-Licensed under AGPLv3
+- **Manual saving in editor still applies**: switching alternates changes the current field content in the UI
+- **Warning system**: confirmation dialogs help prevent accidental overwrite of unsaved text
+- **Overwrite behavior**: using an alternate replaces current content in that field
+
+## Credits
+
+- Fork / extension of: `nbrown725/SillyTavern-AlternateDescriptions`
+- Original project: https://github.com/nbrown725/SillyTavern-AlternateDescriptions

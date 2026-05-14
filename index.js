@@ -1,680 +1,1247 @@
 /*
- * Alternate Character Descriptions Extension for SillyTavern
- * Based on patterns from Group Greetings extension
- * Licensed under AGPLv3
+ * Alternate Descriptions Plus for SillyTavern
+ * Character field alternates + persona description alternates.
+ * Character storage is compatible with Alternate Fields: extensions.alternate_fields.*
  */
 
 import { SlashCommand } from "../../../slash-commands/SlashCommand.js";
-import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
-import { ARGUMENT_TYPE, SlashCommandNamedArgument } from '../../../slash-commands/SlashCommandArgument.js';
-import { SlashCommandEnumValue, enumTypes } from '../../../slash-commands/SlashCommandEnumValue.js';
+import { SlashCommandParser } from "../../../slash-commands/SlashCommandParser.js";
+import {
+  ARGUMENT_TYPE,
+  SlashCommandNamedArgument,
+} from "../../../slash-commands/SlashCommandArgument.js";
+import {
+  SlashCommandEnumValue,
+  enumTypes,
+} from "../../../slash-commands/SlashCommandEnumValue.js";
+import { extension_settings } from "../../../extensions.js";
+import {
+  eventSource,
+  event_types,
+  saveSettingsDebounced,
+} from "../../../../script.js";
+import { power_user } from "../../../power-user.js";
+import { user_avatar } from "../../../personas.js";
 
-const fieldConfigs = [
-    {
-        field: 'description',
-        button_name: 'Descriptions',
-        selector: '#description_div',
-        inject_point: '#character_open_media_overrides',
-        textarea: 'description_textarea',
-        saveKey: 'alt_descriptions',
-    },
-    {
-        field: 'personality',
-        button_name: 'Personalities',
-        selector: '#personality_div',
-        inject_point: '.notes-link',
-        textarea: 'personality_textarea',
-        saveKey: 'alt_personalities',
-    },
-    {
-        field: 'scenario',
-        button_name: 'Scenarios',
-        selector: '#scenario_div',
-        inject_point: '.notes-link',
-        textarea: 'scenario_pole',
-        saveKey: 'alt_scenarios',
-    },
-    {
-        field: 'example dialogue',
-        button_name: 'Example Dialogue',
-        selector: '#mes_example_div',
-        inject_point: '.editor_maximize',
-        textarea: 'mes_example_textarea',
-        saveKey: 'alt_example_dialogue',
-    },
-    {
-        field: 'main prompt',
-        button_name: 'Main Prompts',
-        selector: '#system_prompt_textarea',
-        inject_point: '.editor_maximize',
-        textarea: 'system_prompt_textarea',
-        saveKey: 'alt_main_prompts',
-    },
-    {
-        field: 'post-history instructions',
-        button_name: 'Post-History Instructions',
-        selector: '#post_history_instructions_textarea',
-        inject_point: '.editor_maximize',
-        textarea: 'post_history_instructions_textarea',
-        saveKey: 'alt_post_history',
-    }
-]
+const EXT_ID = "alternate_descriptions_plus";
+const LOG_PREFIX = "[Alternate Descriptions Plus]";
 
-// Utility functions for handling character context
-class ContextUtil {
-    static getCharacterId() {
-        const context = SillyTavern.getContext();
-        let characterId = context.characterId;
-        // When peeking a group chat member, find a proper characterId
-        if (context.groupId) {
-            const avatarUrlInput = document.getElementById('avatar_url_pole');
-            if (avatarUrlInput instanceof HTMLInputElement) {
-                const avatarUrl = avatarUrlInput.value;
-                characterId = context.characters.findIndex(c => c.avatar === avatarUrl);
-            }
-        }
-        return characterId;
-    }
+const defaultSettings = {
+  enableCharacterFields: true,
+  enablePersonaFields: true,
+  autoSaveFirstVersion: true,
+  warnUnsavedChanges: true,
+  showTokenCounts: true,
+  enabledCharacterFieldKeys: {
+    description: true,
+    personality: true,
+    scenario: true,
+    example_dialogue: true,
+    main_prompt: true,
+    post_history_instructions: true,
+  },
+  personas: {},
+};
 
-    static getName() {
-        const context = SillyTavern.getContext();
-        if (context.menuType === 'create') {
-            return context.createCharacterData.name || 'Unknown';
-        } else {
-            const characterId = ContextUtil.getCharacterId();
-            return context.characters[characterId]?.data?.name || 'Unknown';
-        }
-    }
+const characterFieldConfigs = [
+  {
+    scope: "character",
+    field: "description",
+    fieldKey: "description",
+    buttonName: "Descriptions",
+    singularName: "description",
+    selector: "#description_div",
+    injectPoint: "#character_open_media_overrides",
+    textarea: "description_textarea",
+    saveKey: "alt_descriptions",
+  },
+  {
+    scope: "character",
+    field: "personality",
+    fieldKey: "personality",
+    buttonName: "Personalities",
+    singularName: "personality",
+    selector: "#personality_div",
+    injectPoint: ".notes-link",
+    textarea: "personality_textarea",
+    saveKey: "alt_personalities",
+  },
+  {
+    scope: "character",
+    field: "scenario",
+    fieldKey: "scenario",
+    buttonName: "Scenarios",
+    singularName: "scenario",
+    selector: "#scenario_div",
+    injectPoint: ".notes-link",
+    textarea: "scenario_pole",
+    saveKey: "alt_scenarios",
+  },
+  {
+    scope: "character",
+    field: "example dialogue",
+    fieldKey: "example_dialogue",
+    buttonName: "Example Dialogue",
+    singularName: "example dialogue",
+    selector: "#mes_example_div",
+    injectPoint: ".editor_maximize",
+    textarea: "mes_example_textarea",
+    saveKey: "alt_example_dialogue",
+  },
+  {
+    scope: "character",
+    field: "main prompt",
+    fieldKey: "main_prompt",
+    buttonName: "Main Prompts",
+    singularName: "main prompt",
+    selector: "#system_prompt_textarea",
+    injectPoint: ".editor_maximize",
+    textarea: "system_prompt_textarea",
+    saveKey: "alt_main_prompts",
+  },
+  {
+    scope: "character",
+    field: "post-history instructions",
+    fieldKey: "post_history_instructions",
+    buttonName: "Post-History Instructions",
+    singularName: "post-history instructions",
+    selector: "#post_history_instructions_textarea",
+    injectPoint: ".editor_maximize",
+    textarea: "post_history_instructions_textarea",
+    saveKey: "alt_post_history",
+  },
+];
 
-    // Migrates alternate description array elements from string to { title: string, description: string } object.
-    static migrateDescriptions() {
-        const context = SillyTavern.getContext();
+const personaFieldConfig = {
+  scope: "persona",
+  field: "description",
+  fieldKey: "description",
+  buttonName: "Persona Descriptions",
+  singularName: "persona description",
+  selector: null,
+  injectPoint: null,
+  textarea: null,
+  saveKey: "alt_descriptions",
+};
 
-        if (context.menuType !== "create") {
-            const characterId = ContextUtil.getCharacterId();
-            let desc = context.characters[characterId]?.data?.extensions?.alternate_descriptions;
+const saveTimeouts = new Map();
+const tokenTimeouts = new Map();
 
-            if (desc) {
-                if (desc.length !== 0) {
-
-                    // If alternate_description is of old 0.1.0 type String, convert to object {title: String, content: String}
-                    if (typeof (desc[0]) === "string") {
-                        desc = desc.map((description, index) => ({ title: `Description #${index + 1}`, content: description }));
-
-                    // If alternate_description is of newer 0.2.0 type object, rename 'description' property to 'content'
-                    } else if (desc[0].description) {
-                        desc = desc.map(item => ({
-                            title: item.title,
-                            content: item.description
-                        }));
-                    }
-
-                    // Save field data with with description config
-                    saveFieldData(fieldConfigs[0], desc);
-
-                    // Delete the old property
-                    delete context.characters[characterId].data.extensions.alternate_descriptions;
-                    context.writeExtensionField(characterId, 'alternate_descriptions', undefined);
-
-                    console.log("Migration Complete");
-                }
-            }
-        }
-    }
-
-    static getFieldData(field) {
-        this.migrateDescriptions();
-        const context = SillyTavern.getContext();
-        if (context.menuType === 'create') {
-            return context.createCharacterData.extensions?.alternate_fields?.[field.saveKey] || [];
-        } else {
-            const characterId = ContextUtil.getCharacterId();
-            return context.characters[characterId]?.data?.extensions?.alternate_fields?.[field.saveKey] || [];
-        }
-    }
-
-    static getCurrentField(field) {
-        const textarea = document.getElementById(field.textarea);
-        return textarea ? textarea.value : '';
-    }
-
-    static setCurrentField(field, entry) {
-        const textarea = document.getElementById(field.textarea);
-        if (textarea) {
-            textarea.value = entry;
-            // Trigger change event so SillyTavern knows the field was updated
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    }
+function getContext() {
+  return SillyTavern.getContext();
 }
 
-// Save descriptions to character data
-function saveFieldData(field, fieldData) {
-    const context = SillyTavern.getContext();
+function ensureSettings() {
+  if (!extension_settings[EXT_ID]) {
+    extension_settings[EXT_ID] = structuredClone(defaultSettings);
+  }
 
-    if (context.menuType === 'create') {
-        if (!context.createCharacterData.extensions) {
-            context.createCharacterData.extensions = {};
+  const settings = extension_settings[EXT_ID];
+  for (const [key, value] of Object.entries(defaultSettings)) {
+    if (settings[key] === undefined) {
+      settings[key] = structuredClone(value);
+    }
+  }
+
+  if (!settings.enabledCharacterFieldKeys) {
+    settings.enabledCharacterFieldKeys = structuredClone(
+      defaultSettings.enabledCharacterFieldKeys,
+    );
+  }
+
+  for (const [key, value] of Object.entries(
+    defaultSettings.enabledCharacterFieldKeys,
+  )) {
+    if (settings.enabledCharacterFieldKeys[key] === undefined) {
+      settings.enabledCharacterFieldKeys[key] = value;
+    }
+  }
+
+  if (!settings.personas) {
+    settings.personas = {};
+  }
+
+  return settings;
+}
+
+function generateId() {
+  if (crypto?.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `adp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function normalizeEntries(entries, defaultTitle) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  let changed = false;
+  const normalized = entries.map((entry, index) => {
+    const timestamp = nowIso();
+    if (typeof entry === "string") {
+      changed = true;
+      return {
+        id: generateId(),
+        title: `${defaultTitle} #${index + 1}`,
+        content: entry,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        source: "migrated",
+      };
+    }
+
+    const content = String(entry?.content ?? entry?.description ?? "");
+    const normalizedEntry = {
+      id: entry?.id || generateId(),
+      title: String(entry?.title || `${defaultTitle} #${index + 1}`),
+      content,
+      createdAt: entry?.createdAt || timestamp,
+      updatedAt: entry?.updatedAt || timestamp,
+      source:
+        entry?.source ||
+        (entry?.description !== undefined ? "migrated" : "manual"),
+    };
+
+    if (
+      !entry?.id ||
+      !entry?.title ||
+      entry?.content === undefined ||
+      entry?.createdAt === undefined ||
+      entry?.updatedAt === undefined
+    ) {
+      changed = true;
+    }
+
+    return normalizedEntry;
+  });
+
+  return { entries: normalized, changed };
+}
+
+class CharacterUtil {
+  static getCharacterId() {
+    const context = getContext();
+    let characterId = context.characterId;
+
+    if (context.groupId) {
+      const avatarUrlInput = document.getElementById("avatar_url_pole");
+      if (avatarUrlInput instanceof HTMLInputElement) {
+        const avatarUrl = avatarUrlInput.value;
+        const foundId = context.characters.findIndex(
+          (character) => character.avatar === avatarUrl,
+        );
+        if (foundId !== -1) {
+          characterId = foundId;
         }
+      }
+    }
 
+    return characterId;
+  }
+
+  static getName() {
+    const context = getContext();
+    if (context.menuType === "create") {
+      return context.createCharacterData?.name || "New Character";
+    }
+
+    const characterId = this.getCharacterId();
+    return context.characters?.[characterId]?.data?.name || "Unknown Character";
+  }
+
+  static migrateLegacyDescriptions() {
+    const context = getContext();
+    if (context.menuType === "create") {
+      const legacy =
+        context.createCharacterData?.extensions?.alternate_descriptions;
+      if (legacy?.length) {
+        const { entries } = normalizeEntries(legacy, "Description");
         if (!context.createCharacterData.extensions.alternate_fields) {
-            context.createCharacterData.extensions.alternate_fields = {};
+          context.createCharacterData.extensions.alternate_fields = {};
         }
-        context.createCharacterData.extensions.alternate_fields[field.saveKey] = fieldData;
-    } else {
-        const characterId = ContextUtil.getCharacterId();
-        const character = context.characters[characterId];
-
-        // Handle nesting manually
-        if (!character.data.extensions) {
-            character.data.extensions = {};
+        if (
+          !context.createCharacterData.extensions.alternate_fields
+            .alt_descriptions?.length
+        ) {
+          context.createCharacterData.extensions.alternate_fields.alt_descriptions =
+            entries;
         }
-        
-        if (!character.data.extensions.alternate_fields) {
-            character.data.extensions.alternate_fields = {};
-        }
-        character.data.extensions.alternate_fields[field.saveKey] = fieldData;
-
-        // Save the entire alternate_fields object
-        context.writeExtensionField(characterId, 'alternate_fields', character.data.extensions.alternate_fields);
+        delete context.createCharacterData.extensions.alternate_descriptions;
+      }
+      return;
     }
+
+    const characterId = this.getCharacterId();
+    const character = context.characters?.[characterId];
+    const legacy = character?.data?.extensions?.alternate_descriptions;
+    if (!legacy?.length) {
+      return;
+    }
+
+    if (!character.data.extensions.alternate_fields) {
+      character.data.extensions.alternate_fields = {};
+    }
+
+    if (!character.data.extensions.alternate_fields.alt_descriptions?.length) {
+      const { entries } = normalizeEntries(legacy, "Description");
+      character.data.extensions.alternate_fields.alt_descriptions = entries;
+      context.writeExtensionField(
+        characterId,
+        "alternate_fields",
+        character.data.extensions.alternate_fields,
+      );
+    }
+
+    delete character.data.extensions.alternate_descriptions;
+    context.writeExtensionField(
+      characterId,
+      "alternate_descriptions",
+      undefined,
+    );
+    console.log(`${LOG_PREFIX} migrated legacy alternate_descriptions`);
+  }
+
+  static getCurrentField(field) {
+    const textarea = document.getElementById(field.textarea);
+    return textarea ? textarea.value : "";
+  }
+
+  static setCurrentField(field, value) {
+    const textarea = document.getElementById(field.textarea);
+    if (!textarea) {
+      return false;
+    }
+
+    textarea.value = value;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  static getFieldData(field) {
+    this.migrateLegacyDescriptions();
+    const context = getContext();
+    let rawEntries = [];
+
+    if (context.menuType === "create") {
+      rawEntries =
+        context.createCharacterData?.extensions?.alternate_fields?.[
+          field.saveKey
+        ] || [];
+    } else {
+      const characterId = this.getCharacterId();
+      rawEntries =
+        context.characters?.[characterId]?.data?.extensions?.alternate_fields?.[
+          field.saveKey
+        ] || [];
+    }
+
+    const { entries, changed } = normalizeEntries(
+      rawEntries,
+      field.buttonName.replace(/s$/, ""),
+    );
+    if (changed) {
+      this.saveFieldData(field, entries);
+    }
+    return entries;
+  }
+
+  static saveFieldData(field, fieldData) {
+    const context = getContext();
+    if (context.menuType === "create") {
+      if (!context.createCharacterData.extensions) {
+        context.createCharacterData.extensions = {};
+      }
+      if (!context.createCharacterData.extensions.alternate_fields) {
+        context.createCharacterData.extensions.alternate_fields = {};
+      }
+      context.createCharacterData.extensions.alternate_fields[field.saveKey] =
+        fieldData;
+      return;
+    }
+
+    const characterId = this.getCharacterId();
+    const character = context.characters?.[characterId];
+    if (!character) {
+      return;
+    }
+
+    if (!character.data.extensions) {
+      character.data.extensions = {};
+    }
+    if (!character.data.extensions.alternate_fields) {
+      character.data.extensions.alternate_fields = {};
+    }
+
+    character.data.extensions.alternate_fields[field.saveKey] = fieldData;
+    context.writeExtensionField(
+      characterId,
+      "alternate_fields",
+      character.data.extensions.alternate_fields,
+    );
+  }
 }
 
-// Check if current description matches any saved descriptions
-function checkFieldStatus(container, field, fieldData) {
-    const currentFieldEntry = ContextUtil.getCurrentField(field);
-    const hasMatch = fieldData.some(entry => entry.content.trim() === currentFieldEntry.trim());
+class PersonaUtil {
+  static getCandidateTextareas() {
+    const selectors = [
+      "#persona_description",
+      "#persona_description_textarea",
+      "#user_persona_textarea",
+      "#persona_textarea",
+      "#personaDescription",
+      'textarea[name="persona_description"]',
+      'textarea[name="description"]',
+      '[id*="persona" i] textarea',
+      'textarea[id*="persona" i]',
+    ];
 
-    // Find or create status indicator
-    let statusIndicator = container.querySelector('#field-status');
-    if (!statusIndicator) {
-        statusIndicator = document.createElement('div');
-        statusIndicator.id = 'field-status';
-        statusIndicator.style.cssText = `
-            margin: 10px 0; 
-            padding: 8px 12px; 
-            border-radius: 4px; 
-            font-size: 13px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        `;
+    return selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .filter(
+        (element) =>
+          element instanceof HTMLTextAreaElement ||
+          element instanceof HTMLInputElement,
+      );
+  }
 
-        // Insert after the instructions
-        const hr = container.querySelectorAll('hr')[1];
-        hr.parentNode.insertBefore(statusIndicator, hr.nextSibling);
+  static getTextarea() {
+    const visibleCandidates = this.getCandidateTextareas().filter(
+      (element) => element.offsetParent !== null || element.checkVisibility?.(),
+    );
+    return visibleCandidates[0] || this.getCandidateTextareas()[0] || null;
+  }
+
+  static getPersonaObject() {
+    const context = getContext();
+    const candidates = [
+      power_user.persona_descriptions?.[user_avatar],
+      getContext().power_user?.persona,
+      getContext().power_user?.personas?.[getContext().power_user?.persona],
+      getContext().personas?.[getContext().persona],
+      getContext().personas?.[getContext().power_user?.persona],
+      getContext().currentPersona,
+      getContext().activePersona,
+    ];
+
+    return (
+      candidates.find(
+        (candidate) => candidate && typeof candidate === "object",
+      ) || null
+    );
+  }
+
+  static getPersonaKey() {
+    const context = getContext();
+    const personaObject = this.getPersonaObject();
+    const directCandidates = [
+      user_avatar,
+      context.power_user?.persona,
+      context.persona,
+      context.currentPersonaId,
+      context.activePersonaId,
+      personaObject?.id,
+      personaObject?.avatar,
+      personaObject?.name,
+      personaObject?.description,
+    ].filter((value) => typeof value === "string" && value.trim());
+
+    if (directCandidates.length) {
+      return directCandidates[0];
     }
 
-    if (!hasMatch && currentFieldEntry.trim()) {
-        // Current description has been edited
-        statusIndicator.style.backgroundColor = 'rgba(255, 193, 7, 0.1)';
-        statusIndicator.style.borderLeft = '3px solid #ffc107';
-        statusIndicator.style.color = '#856404';
-        statusIndicator.innerHTML = `
+    const textarea = this.getTextarea();
+    if (textarea?.value?.trim()) {
+      return `description:${textarea.value.trim().slice(0, 80)}`;
+    }
+
+    return "default_persona";
+  }
+
+  static getName() {
+    const personaObject = this.getPersonaObject();
+    const context = getContext();
+    return (
+      power_user.personas?.[user_avatar] ||
+      personaObject?.name ||
+      context.power_user?.persona ||
+      context.persona ||
+      "Current Persona"
+    );
+  }
+
+  static getCurrentField() {
+    const textarea = this.getTextarea();
+    return textarea
+      ? textarea.value
+      : String(power_user.persona_description || "");
+  }
+
+  static setCurrentField(value) {
+    const textarea = this.getTextarea();
+    power_user.persona_description = value;
+
+    if (user_avatar && power_user.persona_descriptions?.[user_avatar]) {
+      power_user.persona_descriptions[user_avatar].description = value;
+    }
+
+    if (textarea) {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    saveSettingsDebounced();
+    eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
+    return true;
+  }
+
+  static getFieldData(field) {
+    const settings = ensureSettings();
+    const personaKey = this.getPersonaKey();
+    const rawEntries = settings.personas?.[personaKey]?.[field.saveKey] || [];
+    const { entries, changed } = normalizeEntries(
+      rawEntries,
+      "Persona Description",
+    );
+    if (changed) {
+      this.saveFieldData(field, entries);
+    }
+    return entries;
+  }
+
+  static saveFieldData(field, fieldData) {
+    const settings = ensureSettings();
+    const personaKey = this.getPersonaKey();
+    if (!settings.personas[personaKey]) {
+      settings.personas[personaKey] = {
+        name: this.getName(),
+        createdAt: nowIso(),
+      };
+    }
+
+    settings.personas[personaKey].name = this.getName();
+    settings.personas[personaKey].updatedAt = nowIso();
+    settings.personas[personaKey][field.saveKey] = fieldData;
+    saveSettingsDebounced();
+  }
+}
+
+function getFieldOwnerName(field) {
+  return field.scope === "persona"
+    ? PersonaUtil.getName()
+    : CharacterUtil.getName();
+}
+
+function getCurrentField(field) {
+  return field.scope === "persona"
+    ? PersonaUtil.getCurrentField(field)
+    : CharacterUtil.getCurrentField(field);
+}
+
+function setCurrentField(field, value) {
+  return field.scope === "persona"
+    ? PersonaUtil.setCurrentField(value)
+    : CharacterUtil.setCurrentField(field, value);
+}
+
+function getFieldData(field) {
+  return field.scope === "persona"
+    ? PersonaUtil.getFieldData(field)
+    : CharacterUtil.getFieldData(field);
+}
+
+function saveFieldData(field, fieldData) {
+  if (field.scope === "persona") {
+    PersonaUtil.saveFieldData(field, fieldData);
+  } else {
+    CharacterUtil.saveFieldData(field, fieldData);
+  }
+}
+
+function fieldMatches(entry, currentValue) {
+  return (
+    String(entry?.content ?? "").trim() === String(currentValue ?? "").trim()
+  );
+}
+
+function hasUnsavedChanges(fieldData, currentValue) {
+  return (
+    Boolean(String(currentValue ?? "").trim()) &&
+    !fieldData.some((entry) => fieldMatches(entry, currentValue))
+  );
+}
+
+function updateStatus(container, field, fieldData) {
+  const currentValue = getCurrentField(field);
+  let status = container.querySelector(".adp_status");
+  if (!status) {
+    status = document.createElement("div");
+    status.className = "adp_status";
+    const list = container.querySelector(".adp_field_list");
+    list.parentNode.insertBefore(status, list);
+  }
+
+  status.classList.remove("adp_status_warning", "adp_status_success");
+
+  if (hasUnsavedChanges(fieldData, currentValue)) {
+    status.style.display = "flex";
+    status.classList.add("adp_status_warning");
+    status.innerHTML = `
             <i class="fa-solid fa-exclamation-triangle"></i>
-            <span>Current ${field.field} has been modified and doesn't match any saved version.</span>
-            <div class="menu_button menu_button_icon" id="save-current-btn" style="margin-left: auto; font-size: 12px; padding: 4px 8px;">
+            <span>Current ${escapeHtml(field.singularName)} has unsaved changes.</span>
+            <div class="menu_button menu_button_icon adp_save_current_btn" style="margin-left: auto; font-size: 12px; padding: 4px 8px;">
                 <i class="fa-solid fa-save"></i>
                 <span>Save Current</span>
             </div>
         `;
+    status
+      .querySelector(".adp_save_current_btn")
+      ?.addEventListener("click", () => {
+        fieldData.push(createEntry(field, currentValue));
+        saveFieldData(field, fieldData);
+        updateFieldList(container, field, fieldData);
+      });
+    return;
+  }
 
-        // Add click handler for the save button
-        statusIndicator.querySelector('#save-current-btn').addEventListener('click', () => {
-            fieldData.push( {title: `${field.field} #${fieldData.length+1}`, content: currentFieldEntry });
-            saveFieldData(field, fieldData);
-            updateFieldList(container, field, fieldData);
-            checkFieldStatus(container, field, fieldData);
-        });
-
-    } else if (hasMatch) {
-        // Current description matches a saved version
-        statusIndicator.style.backgroundColor = 'rgba(40, 167, 69, 0.1)';
-        statusIndicator.style.borderLeft = '3px solid #28a745';
-        statusIndicator.style.color = '#155724';
-        statusIndicator.innerHTML = `
+  if (fieldData.some((entry) => fieldMatches(entry, currentValue))) {
+    status.style.display = "flex";
+    status.classList.add("adp_status_success");
+    status.innerHTML = `
             <i class="fa-solid fa-check-circle"></i>
-            <span>Current ${field.field} matches a saved version.</span>
+            <span>Current ${escapeHtml(field.singularName)} matches a saved alternate.</span>
         `;
-    } else {
-        // No current description
-        statusIndicator.style.display = 'none';
-    }
+    return;
+  }
+
+  status.style.display = "none";
 }
 
-// Smart update of active indicators without re-rendering entire list
 function updateActiveIndicators(container, field, fieldData) {
-    const currentFieldEntry = ContextUtil.getCurrentField(field);
-    const listContainer = container.querySelector('#field-list');
-
-    fieldData.forEach((entry, index) => {
-        const isActive = entry.content.trim() === currentFieldEntry.trim();
-        const entryItem = listContainer.querySelector(`[data-item-index="${index}"]`);
-
-        if (entryItem) {
-            const activeIndicator = entryItem.querySelector('.active-indicator');
-            const useBtn = entryItem.querySelector(`.use-field-btn`);
-
-            // Update active class and styling
-            if (isActive) {
-                entryItem.classList.add('active-field');
-                useBtn.style.opacity = '0.5';
-                useBtn.title = 'Already active';
-                activeIndicator.innerHTML = `<i class="fa-solid fa-check-circle" style="color: #28a745; margin-left: 8px;"></i>`;
-            } else {
-                entryItem.classList.remove('active-field');
-                useBtn.style.opacity = '';
-                useBtn.title = '';
-                activeIndicator.innerHTML = '';
-            }
-        }
-    });
-
-    // Update the status indicator
-    checkFieldStatus(container, field, fieldData);
-}
-
-const saveTimeouts = {};
-
-// Update the descriptions list in the popup
-function updateFieldList(container, field, fieldData) {
-    const listContainer = container.querySelector('#field-list');
-    const currentFieldEntry = ContextUtil.getCurrentField(field);
-    const context = SillyTavern.getContext();
-    const getTokenCount = context.getTokenCountAsync;
-
-    if (fieldData.length === 0) {
-        listContainer.innerHTML = `<strong>Click <i class="fa-solid fa-plus"></i> to save the current ${field.field}</strong>`;
-        return;
+  const currentValue = getCurrentField(field);
+  fieldData.forEach((entry, index) => {
+    const item = container.querySelector(`[data-adp-item-index="${index}"]`);
+    if (!item) {
+      return;
     }
 
-    listContainer.innerHTML = fieldData.map((entry, index) => {
-        const isActive = entry.content.trim() === currentFieldEntry.trim();
-        const activeClass = isActive ? 'active-field' : '';
-        const activeIndicator = isActive ? '<i class="fa-solid fa-check-circle" style="color: #28a745; margin-left: 8px;"></i>' : '';
+    const isActive = fieldMatches(entry, currentValue);
+    const indicator = item.querySelector(".adp_active_indicator");
+    const useButton = item.querySelector(".adp_use_btn");
+    item.classList.toggle("adp_active_field", isActive);
+    if (indicator) {
+      indicator.innerHTML = isActive
+        ? '<i class="fa-solid fa-check-circle" style="color: #28a745; margin-left: 8px;"></i>'
+        : "";
+    }
+    if (useButton) {
+      useButton.style.opacity = isActive ? "0.5" : "";
+      useButton.title = isActive ? "Already active" : "";
+    }
+  });
 
-        return `
-            <div class="field-item ${activeClass}" data-item-index="${index}" style="margin-bottom: 15px;">
+  updateStatus(container, field, fieldData);
+}
+
+function createEntry(field, content = "") {
+  const fieldData = getFieldData(field);
+  const timestamp = nowIso();
+  return {
+    id: generateId(),
+    title: `${field.singularName} #${fieldData.length + 1}`,
+    content,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    source: "manual",
+  };
+}
+
+async function updateTokenCount(container, index, content) {
+  if (!ensureSettings().showTokenCounts) {
+    return;
+  }
+
+  const tokenDisplay = container.querySelector(
+    `[data-adp-token-display="${index}"]`,
+  );
+  if (!tokenDisplay) {
+    return;
+  }
+
+  try {
+    const count = await getContext().getTokenCountAsync(content || "");
+    tokenDisplay.textContent = String(count);
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} token counting failed`, error);
+    tokenDisplay.textContent = "?";
+  }
+}
+
+function scheduleSave(field, fieldData, key) {
+  const saveKey = `${field.scope}:${field.saveKey}:${key}`;
+  const existing = saveTimeouts.get(saveKey);
+  if (existing) {
+    clearTimeout(existing);
+  }
+
+  saveTimeouts.set(
+    saveKey,
+    setTimeout(() => {
+      saveFieldData(field, fieldData);
+      saveTimeouts.delete(saveKey);
+    }, 500),
+  );
+}
+
+function scheduleTokenUpdate(container, index, content) {
+  const tokenKey = `${index}`;
+  const existing = tokenTimeouts.get(tokenKey);
+  if (existing) {
+    clearTimeout(existing);
+  }
+
+  tokenTimeouts.set(
+    tokenKey,
+    setTimeout(() => {
+      updateTokenCount(container, index, content);
+      tokenTimeouts.delete(tokenKey);
+    }, 500),
+  );
+}
+
+function updateFieldList(container, field, fieldData) {
+  const listContainer = container.querySelector(".adp_field_list");
+  const currentValue = getCurrentField(field);
+
+  if (!fieldData.length) {
+    listContainer.innerHTML = `<div class="adp_empty_notice"><strong>Click <i class="fa-solid fa-plus"></i> Add New to save the current ${escapeHtml(field.singularName)}.</strong></div>`;
+    updateStatus(container, field, fieldData);
+    return;
+  }
+
+  listContainer.innerHTML = fieldData
+    .map((entry, index) => {
+      const isActive = fieldMatches(entry, currentValue);
+      const activeClass = isActive ? "adp_active_field" : "";
+      const activeIndicator = isActive
+        ? '<i class="fa-solid fa-check-circle" style="color: #28a745; margin-left: 8px;"></i>'
+        : "";
+      const tokenCounter = ensureSettings().showTokenCounts
+        ? `<div class="extension_token_counter adp_token_counter"><span>Tokens:</span> <span data-adp-token-display="${index}">calculating...</span></div>`
+        : "";
+
+      return `
+            <div class="adp_field_item ${activeClass}" data-adp-item-index="${index}">
                 <div class="flex-container justifySpaceBetween">
-                    <div class="flex-container" style="width: 40%">
-                        <input class="text_pole textarea_compact field-title margin0" data-index="${index}" value="${entry.title}" placeholder="${field.field} title" maxlength="50">
-                        <div class="active-indicator">${activeIndicator}</div>
+                    <div class="flex-container adp_title_wrap">
+                        <input class="text_pole textarea_compact adp_field_title margin0" data-index="${index}" value="${escapeHtml(entry.title)}" placeholder="${escapeHtml(field.singularName)} title" maxlength="80">
+                        <div class="adp_active_indicator">${activeIndicator}</div>
                     </div>
-                    <div class="flex-container" style="flex: none;">
-                        <div class="menu_button menu_button_icon use-field-btn" data-index="${index}" ${isActive ? 'style="opacity: 0.5;" title="Already active"' : ''}>
+                    <div class="flex-container" style="flex: none; gap: 5px;">
+                        <div class="menu_button menu_button_icon adp_use_btn" data-index="${index}" ${isActive ? 'style="opacity: 0.5;" title="Already active"' : ""}>
                             <i class="fa-solid fa-arrow-up"></i>
                             <span>Use</span>
                         </div>
-                        <div class="menu_button menu_button_icon delete-field-btn" data-index="${index}">
+                        <div class="menu_button menu_button_icon adp_duplicate_btn" data-index="${index}">
+                            <i class="fa-solid fa-copy"></i>
+                            <span>Duplicate</span>
+                        </div>
+                        <div class="menu_button menu_button_icon adp_delete_btn" data-index="${index}">
                             <i class="fa-solid fa-trash"></i>
                             <span>Delete</span>
                         </div>
                     </div>
                 </div>
-                <textarea class="text_pole textarea_compact field-textarea" rows="8" data-index="${index}" placeholder="${field.field}...">${entry.content}</textarea>
-                <div class="extension_token_counter" style="text-align: right; margin-top: 5px;">
-                    <span>Tokens:</span> <span data-token-display="${index}">calculating...</span>
-                </div>
+                <textarea class="text_pole textarea_compact adp_field_textarea" rows="8" data-index="${index}" placeholder="${escapeHtml(field.singularName)}...">${escapeHtml(entry.content)}</textarea>
+                ${tokenCounter}
             </div>
         `;
-    }).join('');
+    })
+    .join("");
 
-    // Calculate initial token counts
-    fieldData.forEach(async (entry, index) => {
-        const context = SillyTavern.getContext();
-        const tokenCount = await context.getTokenCountAsync(entry.content);
+  if (ensureSettings().showTokenCounts) {
+    fieldData.forEach((entry, index) =>
+      updateTokenCount(container, index, entry.content),
+    );
+  }
 
-        const tokenDisplay = container.querySelector(`[data-token-display="${index}"]`);
-        if (tokenDisplay) {
-            tokenDisplay.textContent = tokenCount;
+  listContainer.querySelectorAll(".adp_use_btn").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const index = Number(event.currentTarget.dataset.index);
+      const current = getCurrentField(field);
+      if (
+        ensureSettings().warnUnsavedChanges &&
+        hasUnsavedChanges(fieldData, current)
+      ) {
+        const confirmed = confirm(
+          `Your current ${field.singularName} has unsaved changes. Switch anyway?`,
+        );
+        if (!confirmed) {
+          return;
         }
+      }
+
+      if (setCurrentField(field, fieldData[index].content)) {
+        updateActiveIndicators(container, field, fieldData);
+      }
     });
+  });
 
-    // Add event listeners
-    listContainer.querySelectorAll('.use-field-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const index = parseInt(e.currentTarget.dataset.index);
-            const currentFieldEntry = ContextUtil.getCurrentField(field);
-            const hasUnsavedChanges = !fieldData.some(entry => entry.content.trim() === currentFieldEntry.trim()) && currentFieldEntry.trim();
-
-            if (hasUnsavedChanges) {
-                // Show simple confirmation dialog
-                const confirmed = confirm(`Your current ${field.field} has unsaved changes. Switch to this ${field.field} anyway?`);
-
-                if (confirmed) {
-                    ContextUtil.setCurrentField(field, fieldData[index].content);
-                    updateActiveIndicators(container, field, fieldData);
-                }
-                // If not confirmed, do nothing
-            } else {
-                // No unsaved changes, switch directly
-                ContextUtil.setCurrentField(field, fieldData[index].content);
-                updateActiveIndicators(container, field, fieldData);
-            }
-        });
+  listContainer.querySelectorAll(".adp_duplicate_btn").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const index = Number(event.currentTarget.dataset.index);
+      const source = fieldData[index];
+      const timestamp = nowIso();
+      fieldData.splice(index + 1, 0, {
+        ...structuredClone(source),
+        id: generateId(),
+        title: `${source.title} Copy`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        source: "manual",
+      });
+      saveFieldData(field, fieldData);
+      updateFieldList(container, field, fieldData);
     });
+  });
 
-    listContainer.querySelectorAll('.delete-field-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const index = parseInt(e.currentTarget.dataset.index);
+  listContainer.querySelectorAll(".adp_delete_btn").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const index = Number(event.currentTarget.dataset.index);
+      const confirmed = confirm(
+        `Are you sure you want to delete "${fieldData[index].title}"? This action cannot be undone.`,
+      );
+      if (!confirmed) {
+        return;
+      }
 
-            // Show confirmation dialog before deleting
-            const confirmed = confirm(`Are you sure you want to delete ${fieldData[index].title}? This action cannot be undone.`);
-
-            if (confirmed) {
-                fieldData.splice(index, 1);
-                saveFieldData(field, fieldData);
-                updateFieldList(container, field, fieldData);
-            }
-            // If not confirmed, do nothing
-        });
+      fieldData.splice(index, 1);
+      saveFieldData(field, fieldData);
+      updateFieldList(container, field, fieldData);
     });
+  });
 
-    listContainer.querySelectorAll('.field-textarea').forEach(textarea => {
-        textarea.addEventListener('input', (e) => {
-            const index = parseInt(e.target.dataset.index);
-            fieldData[index].content = e.target.value;  // ← Still immediate
-
-            // Immediate UI update (responsive feel)
-            setTimeout(() => updateActiveIndicators(container, field, fieldData), 50);
-
-            // Debounced save (performance)
-            if (saveTimeouts[index]) {
-                clearTimeout(saveTimeouts[index]);
-            }
-            saveTimeouts[index] = setTimeout(async () => {
-                saveFieldData(field, fieldData);
-                
-                const tokenCount = await getTokenCount(fieldData[index].content);
-
-                const tokenDisplay = container.querySelector(`[data-token-display="${index}"]`);
-                if (tokenDisplay) {
-                    tokenDisplay.textContent = tokenCount;
-                }
-
-            }, 500);
-        });
+  listContainer.querySelectorAll(".adp_field_textarea").forEach((textarea) => {
+    textarea.addEventListener("input", (event) => {
+      const index = Number(event.target.dataset.index);
+      fieldData[index].content = event.target.value;
+      fieldData[index].updatedAt = nowIso();
+      setTimeout(() => updateActiveIndicators(container, field, fieldData), 50);
+      scheduleSave(field, fieldData, `content:${index}`);
+      scheduleTokenUpdate(container, index, fieldData[index].content);
     });
+  });
 
-    listContainer.querySelectorAll('.field-title').forEach(titleInput => {
-        titleInput.addEventListener('input', (e) => {
-            const index = parseInt(e.target.dataset.index);
-            fieldData[index].title = e.target.value;
-
-            if (saveTimeouts[index]) {
-                clearTimeout(saveTimeouts[index]);
-            }
-            saveTimeouts[index] = setTimeout(() => {
-                saveFieldData(field, fieldData);
-                // Token counting here
-            }, 500);
-        });
+  listContainer.querySelectorAll(".adp_field_title").forEach((input) => {
+    input.addEventListener("input", (event) => {
+      const index = Number(event.target.dataset.index);
+      fieldData[index].title = event.target.value;
+      fieldData[index].updatedAt = nowIso();
+      scheduleSave(field, fieldData, `title:${index}`);
     });
+  });
+
+  updateStatus(container, field, fieldData);
 }
 
-// Monitor the main description textarea for changes
 function setupFieldMonitoring(container, field, fieldData) {
-    const mainTextarea = document.getElementById(field.textarea);
-    if (mainTextarea) {
-        checkFieldStatus(container, field, fieldData);
+  const getElement = () =>
+    field.scope === "persona"
+      ? PersonaUtil.getTextarea()
+      : document.getElementById(field.textarea);
+  const mainInput = getElement();
+  if (!mainInput) {
+    return;
+  }
 
-        const checkStatus = () => {
-            setTimeout(() => {
-                updateActiveIndicators(container, field, fieldData);
-            }, 50);
-        };
+  const checkStatus = () =>
+    setTimeout(() => updateActiveIndicators(container, field, fieldData), 50);
+  mainInput.addEventListener("input", checkStatus);
+  mainInput.addEventListener("paste", checkStatus);
+  mainInput.addEventListener("change", checkStatus);
 
-        mainTextarea.addEventListener('input', checkStatus);
-        mainTextarea.addEventListener('paste', checkStatus);
-
-        // Cleanup when popup closes
-        const observer = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-                if (mutation.type === 'childList' && !document.contains(container)) {
-                    mainTextarea.removeEventListener('input', checkStatus);
-                    mainTextarea.removeEventListener('paste', checkStatus);
-                    observer.disconnect();
-                }
-            });
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
+  const observer = new MutationObserver(() => {
+    if (!document.contains(container)) {
+      mainInput.removeEventListener("input", checkStatus);
+      mainInput.removeEventListener("paste", checkStatus);
+      mainInput.removeEventListener("change", checkStatus);
+      observer.disconnect();
     }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
-// Create the popup content
 function createPopupContent(field) {
-    const characterName = ContextUtil.getName();
-    let fieldData = ContextUtil.getFieldData(field);
-    let currentFieldEntry = ContextUtil.getCurrentField(field);
+  let fieldData = getFieldData(field);
+  let currentValue = getCurrentField(field);
 
-    // AUTO-SAVE: If this is the first time opening and there's a current description
-    if (fieldData.length === 0 && currentFieldEntry.trim()) {
-        fieldData = [{ title: `${field.field} #1`, content: currentFieldEntry }];
-        saveFieldData(field, fieldData);
-    }
+  if (
+    ensureSettings().autoSaveFirstVersion &&
+    fieldData.length === 0 &&
+    currentValue.trim()
+  ) {
+    fieldData = [createEntry(field, currentValue)];
+    saveFieldData(field, fieldData);
+  }
 
-    const container = document.createElement('div');
-    container.className = 'flex-container flexFlowColumn';  
+  const ownerName = getFieldOwnerName(field);
+  const container = document.createElement("div");
+  container.className = "flex-container flexFlowColumn adp_popup";
 
-    container.innerHTML = `
+  container.innerHTML = `
         <div class="flex-container justifySpaceBetween alignItemsCenter">
-            <h3 class="margin0">Alternate ${field.button_name} for <span>${characterName}</span></h3>
-            <div id="add-field-btn" class="menu_button menu_button_icon">
-                <i class="fa-solid fa-plus"></i>
-                <span>Add New</span>
+            <h3 class="margin0">Alternate ${escapeHtml(field.buttonName)} for <span>${escapeHtml(ownerName)}</span></h3>
+            <div class="flex-container" style="gap: 5px;">
+                <div class="menu_button menu_button_icon adp_save_current_top_btn">
+                    <i class="fa-solid fa-save"></i>
+                    <span>Save Current</span>
+                </div>
+                <div class="menu_button menu_button_icon adp_add_btn">
+                    <i class="fa-solid fa-plus"></i>
+                    <span>Add New</span>
+                </div>
             </div>
         </div>
         <hr>
         <div class="justifyLeft">
             <small>
-                Save different versions of your character's ${field.field}. Click "Use" to switch the active ${field.field} in the editor.
-                ${fieldData.length === 1 && fieldData[0].content === currentFieldEntry ?
-            `<br><strong>💾 Your original ${field.field} has been automatically saved!</strong>` : ''
-        }
+                Save different versions of this ${escapeHtml(field.singularName)}. Click "Use" to switch the active text in the editor.
             </small>
         </div>
         <hr>
-        <div id="field-list"></div>
+        <div class="adp_field_list"></div>
     `;
 
-    // Add event listener for "Add New" button with duplicate check
-    container.querySelector(`#add-field-btn`).addEventListener('click', () => {
-        currentFieldEntry = ContextUtil.getCurrentField(field);
-        fieldData.push(currentFieldEntry ? { title: `${field.field} #${fieldData.length + 1}`, content: currentFieldEntry } : { title: `${field.field} #${fieldData.length+1}`, content: ''});
-        saveFieldData(field, fieldData);
-        updateFieldList(container, field, fieldData);
-    });
-
-    // Initial render
+  container.querySelector(".adp_add_btn")?.addEventListener("click", () => {
+    currentValue = getCurrentField(field);
+    fieldData.push(createEntry(field, currentValue || ""));
+    saveFieldData(field, fieldData);
     updateFieldList(container, field, fieldData);
+  });
 
-    // Setup real-time monitoring of main textarea
-    setupFieldMonitoring(container, field, fieldData);
+  container
+    .querySelector(".adp_save_current_top_btn")
+    ?.addEventListener("click", () => {
+      currentValue = getCurrentField(field);
+      fieldData.push(createEntry(field, currentValue || ""));
+      saveFieldData(field, fieldData);
+      updateFieldList(container, field, fieldData);
+    });
 
-    return container;
+  updateFieldList(container, field, fieldData);
+  setupFieldMonitoring(container, field, fieldData);
+  return container;
 }
 
-// Create field button
 function createButton(field) {
-    const button = document.createElement('div');
-    button.className = `menu_button menu_button_icon alt_${field.saveKey}_button alt_fields_button`;
-    button.title = `Manage alternate ${field.field}s`;
-    button.innerHTML = `<i class="fa-solid fa-bars-staggered"></i><span>Alt. ${field.button_name}</span>`;
-
-    // Handle button click - open the popup
-    button.addEventListener('click', () => {
-        const context = SillyTavern.getContext();
-        const popupContent = createPopupContent(field);
-        context.callPopup(popupContent, 'text', '', { wide: true, large: true });
+  const button = document.createElement("div");
+  button.className = `menu_button menu_button_icon adp_button adp_${field.scope}_${field.saveKey}_button`;
+  button.title = `Manage alternate ${field.singularName}s`;
+  button.innerHTML = `<i class="fa-solid fa-bars-staggered"></i><span>Alt. ${escapeHtml(field.buttonName)}</span>`;
+  button.addEventListener("click", () => {
+    const popupContent = createPopupContent(field);
+    getContext().callPopup(popupContent, "text", "", {
+      wide: true,
+      large: true,
     });
-
-    return button;
+  });
+  return button;
 }
 
-// Wait for the DOM to be ready
-function waitForElement(selector, callback) {
-    const element = document.querySelector(selector);
-    if (element) {
-        callback(element);
-    } else {
-        setTimeout(() => waitForElement(selector, callback), 100);
+function waitForElement(selector, callback, attempts = 100) {
+  const element = document.querySelector(selector);
+  if (element) {
+    callback(element);
+    return;
+  }
+
+  if (attempts <= 0) {
+    return;
+  }
+
+  setTimeout(() => waitForElement(selector, callback, attempts - 1), 100);
+}
+
+function injectCharacterButton(field) {
+  if (
+    !ensureSettings().enableCharacterFields ||
+    !ensureSettings().enabledCharacterFieldKeys[field.fieldKey]
+  ) {
+    return;
+  }
+
+  waitForElement(field.selector, (element) => {
+    if (document.querySelector(`.adp_${field.scope}_${field.saveKey}_button`)) {
+      return;
     }
+
+    const button = createButton(field);
+    if (field.selector.startsWith("#") && field.selector.includes("textarea")) {
+      const parentDiv = element.closest("div") || element.parentElement;
+      const injectElement = parentDiv?.querySelector(field.injectPoint);
+      if (injectElement) {
+        injectElement.parentNode.insertBefore(
+          button,
+          injectElement.nextSibling,
+        );
+      }
+      return;
+    }
+
+    const injectElement = element.querySelector(field.injectPoint);
+    if (injectElement) {
+      injectElement.parentNode.insertBefore(button, injectElement.nextSibling);
+    }
+  });
 }
 
-// Inject buttons into the field area
+function injectPersonaButton() {
+  if (!ensureSettings().enablePersonaFields) {
+    return;
+  }
+
+  const textarea = PersonaUtil.getTextarea();
+  if (
+    !textarea ||
+    document.querySelector(".adp_persona_alt_descriptions_button")
+  ) {
+    return;
+  }
+
+  const button = createButton(personaFieldConfig);
+  button.classList.add("adp_persona_alt_descriptions_button");
+
+  const controls =
+    textarea.closest(".flex-container")?.querySelector(".editor_maximize") ||
+    textarea.parentElement?.querySelector(".editor_maximize") ||
+    textarea;
+
+  if (controls === textarea) {
+    textarea.parentElement?.insertBefore(button, textarea);
+  } else {
+    controls.parentNode.insertBefore(button, controls.nextSibling);
+  }
+}
+
 function injectButtons() {
-    fieldConfigs.forEach(field => {
-        if (field.selector.startsWith('#') && field.selector.includes('textarea')) {
-            // Handle textarea-based selectors
-            waitForElement(field.selector, (textarea) => {
-                const fieldButton = createButton(field);
-                const parentDiv = textarea.closest('div');
-                const injectElem = parentDiv.querySelector(field.inject_point);
-                if (injectElem) {
-                    injectElem.parentNode.insertBefore(fieldButton, injectElem.nextSibling);
-                }
-            });
-        } else {
-            // Handle div-based selectors
-            waitForElement(field.selector, (fieldDiv) => {
-                const fieldButton = createButton(field);
-                const injectElem = fieldDiv.querySelector(field.inject_point);
-                if (injectElem) {
-                    injectElem.parentNode.insertBefore(fieldButton, injectElem.nextSibling);
-                }
-            });
-        }
+  characterFieldConfigs.forEach(injectCharacterButton);
+  injectPersonaButton();
+}
+
+function addSettingsUi() {
+  const settingsContainer =
+    document.getElementById("extensions_settings") ||
+    document.getElementById("extensions_settings2");
+  if (!settingsContainer || document.getElementById("adp_settings")) {
+    return;
+  }
+
+  const settings = ensureSettings();
+  const block = document.createElement("div");
+  block.id = "adp_settings";
+  block.className = "adp_settings_block";
+  block.innerHTML = `
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Alternate Descriptions Plus</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div class="inline-drawer-content">
+                <label><input type="checkbox" id="adp_enable_character" ${settings.enableCharacterFields ? "checked" : ""}> Enable character field alternates</label>
+                <label><input type="checkbox" id="adp_enable_persona" ${settings.enablePersonaFields ? "checked" : ""}> Enable persona description alternates</label>
+                <label><input type="checkbox" id="adp_auto_save_first" ${settings.autoSaveFirstVersion ? "checked" : ""}> Auto-save first version on first open</label>
+                <label><input type="checkbox" id="adp_warn_unsaved" ${settings.warnUnsavedChanges ? "checked" : ""}> Warn before overwriting unsaved changes</label>
+                <label><input type="checkbox" id="adp_show_tokens" ${settings.showTokenCounts ? "checked" : ""}> Show token counts</label>
+            </div>
+        </div>
+    `;
+
+  settingsContainer.appendChild(block);
+
+  const bindCheckbox = (id, key) => {
+    block.querySelector(id)?.addEventListener("change", (event) => {
+      settings[key] = event.target.checked;
+      saveSettingsDebounced();
+      injectButtons();
     });
+  };
+
+  bindCheckbox("#adp_enable_character", "enableCharacterFields");
+  bindCheckbox("#adp_enable_persona", "enablePersonaFields");
+  bindCheckbox("#adp_auto_save_first", "autoSaveFirstVersion");
+  bindCheckbox("#adp_warn_unsaved", "warnUnsavedChanges");
+  bindCheckbox("#adp_show_tokens", "showTokenCounts");
 }
 
-// Register slash command to switch field entry
-function registerSlashCommand() {
-
-    // Enum provider for field types
-    const fieldEnumProvider = () => {
-        return fieldConfigs.map(field =>
-            new SlashCommandEnumValue(
-                field.field, // field name
-                field.button_name, // field name plural
-                enumTypes.name, // field type
-            )
-        );
-    };
-
-    // Enum provider for field names
-    const fieldNameEnumProvider = (executor) => {
-        // Get the current value of the field argument
-        const fieldValue = executor.namedArgumentList.find(x => x.name === 'field')?.value;
-
-        // return empty if no field is specified
-        if (!fieldValue) {
-            return []; // No field specified yet
-        }
-
-        // Get field config for fieldValue. Return empty if fieldConfig cannot be found
-        const fieldConfig = fieldConfigs.find(f => f.field === fieldValue);
-        if (!fieldConfig) {
-            return []; // Invalid field
-        }
-
-        // Get the field data
-        const fieldData = ContextUtil.getFieldData(fieldConfig);
-
-        // Return enum values for each alternate entry
-        return fieldData.map(entry =>
-            new SlashCommandEnumValue(
-                entry.title, // field name
-                entry.content.substring(0, 50) + (entry.content.length > 50 ? '...' : ''), // field preview. First 50 characters.
-                enumTypes.name, // field type
-            )
-        );
-    };
-
-    // Register the slash command
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'altfield',
-        callback: altFieldCallback,
-        helpString: `
-        <div>
-        Switch to an alternate field entry. Must have a character selected.
-        </div>
-        <div>
-        <strong style="color: rgb(255, 193, 7)">WARNING:</strong> Will overwrite current field without saving it.   
-        </div>
-        <div>
-            <strong>Example:</strong>
-            <ul>
-                <li>
-                    <pre><code>/altfield field=description name="Description #1"</code></pre>
-                    Changes the description field to the alternate entry titled "Description #1"
-                </li>
-            </ul>
-        </div>`,
-        namedArgumentList: [
-            SlashCommandNamedArgument.fromProps({
-                name: 'field',
-                description: 'Field type to switch (description, personality, etc.)',
-                typeList: [ARGUMENT_TYPE.STRING],
-                isRequired: true,
-                enumProvider: fieldEnumProvider,
-                forceEnum: true
-            }),
-            SlashCommandNamedArgument.fromProps({
-                name: 'name',
-                description: 'The name of the saved alternate to switch to',
-                typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: fieldNameEnumProvider
-            })
-        ],
-        returns: ARGUMENT_TYPE.STRING
-    }));
+function fieldEnumProvider() {
+  return characterFieldConfigs
+    .filter(
+      (field) => ensureSettings().enabledCharacterFieldKeys[field.fieldKey],
+    )
+    .map(
+      (field) =>
+        new SlashCommandEnumValue(
+          field.field,
+          field.buttonName,
+          enumTypes.name,
+        ),
+    );
 }
 
-// Callback function that executes the command
+function fieldNameEnumProvider(executor) {
+  const fieldValue = executor.namedArgumentList.find(
+    (argument) => argument.name === "field",
+  )?.value;
+  const fieldConfig = characterFieldConfigs.find(
+    (field) => field.field === fieldValue || field.fieldKey === fieldValue,
+  );
+  if (!fieldConfig) {
+    return [];
+  }
+
+  return getFieldData(fieldConfig).map(
+    (entry) =>
+      new SlashCommandEnumValue(
+        entry.title,
+        entry.content.substring(0, 50) +
+          (entry.content.length > 50 ? "..." : ""),
+        enumTypes.name,
+      ),
+  );
+}
+
+function personaNameEnumProvider() {
+  return getFieldData(personaFieldConfig).map(
+    (entry) =>
+      new SlashCommandEnumValue(
+        entry.title,
+        entry.content.substring(0, 50) +
+          (entry.content.length > 50 ? "..." : ""),
+        enumTypes.name,
+      ),
+  );
+}
+
 function altFieldCallback(namedArguments) {
-    const { field, name } = namedArguments;
+  const { field, name } = namedArguments;
+  const fieldConfig = characterFieldConfigs.find(
+    (config) => config.field === field || config.fieldKey === field,
+  );
+  if (!fieldConfig) {
+    return `Error: Unknown field "${field}". Available fields: ${characterFieldConfigs.map((config) => config.field).join(", ")}`;
+  }
 
-    try {
-        // Get field config for field arg. Return error if field is invalid.
-        const fieldConfig = fieldConfigs.find(f => f.field === field);
-        if (!fieldConfig) {
-            return `Error: Unknown field "${field}". Available fields: ${fieldConfigs.map(f => f.field).join(', ')}`;
-        }
-
-        // Get the field data. Return empty string if no entries found
-        const fieldData = ContextUtil.getFieldData(fieldConfig);
-
-        if (fieldData.length === 0) {
-            return `Error: No field enteries found for ${field}`;
-        }
-
-        let alternate;
-
-        // If name is provided, find the specific alternate. Else return random
-        if (name && name.trim()) {
-            alternate = fieldData.find(entry => entry.title === name);
-            if (!alternate) {
-                const availableNames = fieldData.map(entry => entry.title);
-                return `Error: No alternate named "${name}" found for ${field}. Available: ${availableNames.join(', ')}`;
-            }
-        } else {
-            // If name is blank, choose a random alternate
-            const randomIndex = Math.floor(Math.random() * fieldData.length);
-            alternate = fieldData[randomIndex];
-        }
-
-        // Switch to the alternate
-        ContextUtil.setCurrentField(fieldConfig, alternate.content);
-
-        // return switched description
-        return alternate.content;
-
-    } catch (error) {
-        console.error('Error in altfield command:', error);
-        return `Error: ${error.message}`;
-    }
+  return switchToAlternate(fieldConfig, name);
 }
 
-// Initialize the extension
-injectButtons();
-registerSlashCommand();
+function altPersonaCallback(namedArguments) {
+  const { name } = namedArguments;
+  return switchToAlternate(personaFieldConfig, name);
+}
+
+function switchToAlternate(field, name) {
+  try {
+    const data = getFieldData(field);
+    if (!data.length) {
+      return `Error: No alternate entries found for ${field.scope} ${field.singularName}.`;
+    }
+
+    let alternate;
+    if (name && String(name).trim()) {
+      alternate = data.find((entry) => entry.title === name);
+      if (!alternate) {
+        return `Error: No alternate named "${name}" found. Available: ${data.map((entry) => entry.title).join(", ")}`;
+      }
+    } else {
+      alternate = data[Math.floor(Math.random() * data.length)];
+    }
+
+    if (!setCurrentField(field, alternate.content)) {
+      return `Error: Could not find active ${field.singularName} field.`;
+    }
+
+    return alternate.content;
+  } catch (error) {
+    console.error(`${LOG_PREFIX} slash command failed`, error);
+    return `Error: ${error.message}`;
+  }
+}
+
+function registerSlashCommands() {
+  SlashCommandParser.addCommandObject(
+    SlashCommand.fromProps({
+      name: "altfield",
+      callback: altFieldCallback,
+      helpString:
+        'Switch to an alternate character field entry. Example: /altfield field=description name="Description #1". Omit name to select a random alternate.',
+      namedArgumentList: [
+        SlashCommandNamedArgument.fromProps({
+          name: "field",
+          description: "Character field to switch",
+          typeList: [ARGUMENT_TYPE.STRING],
+          isRequired: true,
+          enumProvider: fieldEnumProvider,
+          forceEnum: false,
+        }),
+        SlashCommandNamedArgument.fromProps({
+          name: "name",
+          description: "Alternate title. Omit for random.",
+          typeList: [ARGUMENT_TYPE.STRING],
+          enumProvider: fieldNameEnumProvider,
+        }),
+      ],
+      returns: ARGUMENT_TYPE.STRING,
+    }),
+  );
+
+  SlashCommandParser.addCommandObject(
+    SlashCommand.fromProps({
+      name: "altpersona",
+      callback: altPersonaCallback,
+      helpString:
+        'Switch to an alternate persona description. Example: /altpersona name="Formal". Omit name to select a random alternate.',
+      namedArgumentList: [
+        SlashCommandNamedArgument.fromProps({
+          name: "name",
+          description: "Persona alternate title. Omit for random.",
+          typeList: [ARGUMENT_TYPE.STRING],
+          enumProvider: personaNameEnumProvider,
+        }),
+      ],
+      returns: ARGUMENT_TYPE.STRING,
+    }),
+  );
+}
+
+jQuery(() => {
+  ensureSettings();
+  injectButtons();
+  addSettingsUi();
+  registerSlashCommands();
+
+  const reinject = () => setTimeout(injectButtons, 500);
+  eventSource.on?.(event_types.CHAT_CHANGED, reinject);
+  eventSource.on?.(event_types.CHARACTER_EDITED, reinject);
+  eventSource.on?.(event_types.PERSONA_CHANGED, reinject);
+  eventSource.on?.(event_types.PERSONA_UPDATED, reinject);
+
+  const observer = new MutationObserver(() => injectPersonaButton());
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  console.log(`${LOG_PREFIX} loaded`);
+});

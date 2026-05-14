@@ -1,12 +1,12 @@
 {
-    "display_name": "Alternate Fields",
-    "loading_order": 10,
-    "requires": [],
-    "optional": [],
-    "js": "index.js",
-    "css": "style.css",
-    "author": "Nbrown725",
-    "version": "1.2.0",
-    "homePage": "https://github.com/nbrown725/SillyTavern-AlternateDescriptions",
-    "auto_update": true
+  "display_name": "SillyTavern-AlternateDescriptionsPlus",
+  "loading_order": 10,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Aster/a/",
+  "version": "0.1.0",
+  "homePage": "https://github.com/stellvt/SillyTavern-AlternateDescriptionsPlus",
+  "auto_update": false
 }
