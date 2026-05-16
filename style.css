@@ -86,7 +86,6 @@
 }
 
 .adp_settings_block .inline-drawer-content {
-    display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: 2px;
