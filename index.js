@@ -21,7 +21,12 @@ import {
   saveSettingsDebounced,
 } from "../../../../script.js";
 import { power_user } from "../../../power-user.js";
-import { user_avatar } from "../../../personas.js";
+import {
+  user_avatar,
+  getCurrentConnectionObj,
+  setPersonaLockState,
+  setPersonaDescription,
+} from "../../../personas.js";
 
 const EXT_ID = "alternate_descriptions_plus";
 const LOG_PREFIX = "[Alternate Descriptions Plus]";
@@ -186,7 +191,7 @@ function escapeHtml(value) {
 
 function normalizeEntries(entries, defaultTitle) {
   if (!Array.isArray(entries)) {
-    return [];
+    return { entries: [], changed: true };
   }
 
   let changed = false;
@@ -397,91 +402,16 @@ class CharacterUtil {
 }
 
 class PersonaUtil {
-  static getCandidateTextareas() {
-    const selectors = [
-      "#persona_description",
-      "#persona_description_textarea",
-      "#user_persona_textarea",
-      "#persona_textarea",
-      "#personaDescription",
-      'textarea[name="persona_description"]',
-      'textarea[name="description"]',
-      '[id*="persona" i] textarea',
-      'textarea[id*="persona" i]',
-    ];
-
-    return selectors
-      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
-      .filter(
-        (element) =>
-          element instanceof HTMLTextAreaElement ||
-          element instanceof HTMLInputElement,
-      );
-  }
-
   static getTextarea() {
-    const visibleCandidates = this.getCandidateTextareas().filter(
-      (element) => element.offsetParent !== null || element.checkVisibility?.(),
-    );
-    return visibleCandidates[0] || this.getCandidateTextareas()[0] || null;
-  }
-
-  static getPersonaObject() {
-    const context = getContext();
-    const candidates = [
-      power_user.persona_descriptions?.[user_avatar],
-      getContext().power_user?.persona,
-      getContext().power_user?.personas?.[getContext().power_user?.persona],
-      getContext().personas?.[getContext().persona],
-      getContext().personas?.[getContext().power_user?.persona],
-      getContext().currentPersona,
-      getContext().activePersona,
-    ];
-
-    return (
-      candidates.find(
-        (candidate) => candidate && typeof candidate === "object",
-      ) || null
-    );
+    return document.getElementById("persona_description");
   }
 
   static getPersonaKey() {
-    const context = getContext();
-    const personaObject = this.getPersonaObject();
-    const directCandidates = [
-      user_avatar,
-      context.power_user?.persona,
-      context.persona,
-      context.currentPersonaId,
-      context.activePersonaId,
-      personaObject?.id,
-      personaObject?.avatar,
-      personaObject?.name,
-      personaObject?.description,
-    ].filter((value) => typeof value === "string" && value.trim());
-
-    if (directCandidates.length) {
-      return directCandidates[0];
-    }
-
-    const textarea = this.getTextarea();
-    if (textarea?.value?.trim()) {
-      return `description:${textarea.value.trim().slice(0, 80)}`;
-    }
-
-    return "default_persona";
+    return user_avatar;
   }
 
-  static getName() {
-    const personaObject = this.getPersonaObject();
-    const context = getContext();
-    return (
-      power_user.personas?.[user_avatar] ||
-      personaObject?.name ||
-      context.power_user?.persona ||
-      context.persona ||
-      "Current Persona"
-    );
+  static getName(key = user_avatar) {
+    return power_user.personas?.[key] || "Current Persona";
   }
 
   static getCurrentField() {
@@ -492,27 +422,20 @@ class PersonaUtil {
   }
 
   static setCurrentField(value) {
-    const textarea = this.getTextarea();
+    appliedPersonaLink = null;
     power_user.persona_description = value;
-
-    if (user_avatar && power_user.persona_descriptions?.[user_avatar]) {
+    if (power_user.persona_descriptions?.[user_avatar]) {
       power_user.persona_descriptions[user_avatar].description = value;
     }
-
-    if (textarea) {
-      textarea.value = value;
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
-      textarea.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-
+    setPersonaDescription();
     saveSettingsDebounced();
-    eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
+    void eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     return true;
   }
 
   static getFieldData(field) {
     const settings = ensureSettings();
-    const personaKey = this.getPersonaKey();
+    const personaKey = field.personaKey ?? this.getPersonaKey();
     const rawEntries = settings.personas?.[personaKey]?.[field.saveKey] || [];
     const { entries, changed } = normalizeEntries(
       rawEntries,
@@ -526,19 +449,96 @@ class PersonaUtil {
 
   static saveFieldData(field, fieldData) {
     const settings = ensureSettings();
-    const personaKey = this.getPersonaKey();
+    const personaKey = field.personaKey ?? this.getPersonaKey();
     if (!settings.personas[personaKey]) {
       settings.personas[personaKey] = {
-        name: this.getName(),
+        name: this.getName(personaKey),
         createdAt: nowIso(),
       };
     }
 
-    settings.personas[personaKey].name = this.getName();
+    settings.personas[personaKey].name = this.getName(personaKey);
     settings.personas[personaKey].updatedAt = nowIso();
     settings.personas[personaKey][field.saveKey] = fieldData;
+    const links = settings.personas[personaKey].characterLinks;
+    for (const [avatar, entryId] of Object.entries(links || {})) {
+      if (!fieldData.some((entry) => entry.id === entryId)) delete links[avatar];
+    }
     saveSettingsDebounced();
   }
+}
+
+let appliedPersonaLink = null;
+
+function hasNativePersonaConnection(personaKey, avatar) {
+  return power_user.persona_descriptions?.[personaKey]?.connections?.some(
+    (connection) => connection.type === "character" && connection.id === avatar,
+  );
+}
+
+function applyLinkedPersonaDescription() {
+  const connection = getCurrentConnectionObj();
+  const descriptor = power_user.persona_descriptions?.[user_avatar];
+  const persona = ensureSettings().personas[user_avatar];
+  const entryId = ensureSettings().enablePersonaFields && connection?.type === "character"
+    && hasNativePersonaConnection(user_avatar, connection.id)
+    ? persona?.characterLinks?.[connection.id] : null;
+  const entry = entryId && PersonaUtil.getFieldData(personaFieldConfig).find(
+    (candidate) => candidate.id === entryId,
+  );
+  const shouldRestore = appliedPersonaLink?.personaKey === user_avatar
+    || (descriptor && Object.keys(persona?.characterLinks || {}).length > 0);
+  appliedPersonaLink = entry ? { personaKey: user_avatar, avatar: connection.id } : null;
+  if (!entry && !shouldRestore) return;
+  const content = entry ? entry.content : String(descriptor?.description ?? "");
+  if (power_user.persona_description === content) return;
+
+  // Automatic selection changes the active prompt, while the descriptor keeps
+  // the default text used for characters without an alternate connection.
+  power_user.persona_description = content;
+  setPersonaDescription();
+  void eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
+}
+
+function renderPersonaLinkButton(field, entry) {
+  const connection = getCurrentConnectionObj();
+  const available = connection?.type === "character" && ensureSettings().enablePersonaFields;
+  const linked = available && hasNativePersonaConnection(field.personaKey, connection.id)
+    && ensureSettings().personas[field.personaKey]?.characterLinks?.[connection.id] === entry.id;
+  const name = available
+    ? getContext().characters.find((character) => character.avatar === connection.id)?.name || "character"
+    : "";
+  return `<button type="button" class="menu_button menu_button_icon adp_link_btn"
+    data-entry-id="${escapeHtml(entry.id)}" aria-pressed="${Boolean(linked)}"
+    title="${escapeHtml(available ? `${linked ? "Unlink from" : "Link to"} ${name}` : "Open a character chat to link this description.")}"
+    ${available ? "" : "disabled"}>
+    <i class="fa-solid ${linked ? "fa-link-slash" : "fa-link"}"></i>
+    <span>${linked ? "Unlink from Character" : "Link to Character"}</span>
+  </button>`;
+}
+
+async function togglePersonaEntryLink(field, entryId) {
+  const connection = getCurrentConnectionObj();
+  if (!ensureSettings().enablePersonaFields || connection?.type !== "character"
+    || field.personaKey !== user_avatar) return;
+  const persona = ensureSettings().personas[field.personaKey];
+  if (!persona?.alt_descriptions?.some((entry) => entry.id === entryId)) return;
+  persona.characterLinks ??= {};
+  if (persona.characterLinks[connection.id] === entryId
+    && hasNativePersonaConnection(field.personaKey, connection.id)) {
+    // Removing an alternate leaves the independently managed native connection.
+    delete persona.characterLinks[connection.id];
+  } else {
+    if (ensureSettings().warnUnsavedChanges
+      && hasUnsavedChanges(persona.alt_descriptions, PersonaUtil.getCurrentField())
+      && !confirm("Your current persona description has unsaved changes. Link and switch anyway?")) return;
+    await setPersonaLockState(true, "character");
+    if (field.personaKey !== user_avatar || getCurrentConnectionObj()?.id !== connection.id
+      || !hasNativePersonaConnection(field.personaKey, connection.id)) return;
+    persona.characterLinks[connection.id] = entryId;
+  }
+  saveSettingsDebounced();
+  applyLinkedPersonaDescription();
 }
 
 function getFieldOwnerName(field) {
@@ -693,6 +693,11 @@ async function updateTokenCount(container, index, content) {
 }
 
 function scheduleSave(field, fieldData, key) {
+  if (field.scope === "persona") {
+    // Capture edits in settings immediately; disk persistence is already debounced.
+    saveFieldData(field, fieldData);
+    return;
+  }
   const saveKey = `${field.scope}:${field.saveKey}:${key}`;
   const existing = saveTimeouts.get(saveKey);
   if (existing) {
@@ -752,7 +757,7 @@ function updateFieldList(container, field, fieldData) {
                         <input class="text_pole textarea_compact adp_field_title margin0" data-index="${index}" value="${escapeHtml(entry.title)}" placeholder="${escapeHtml(field.singularName)} title" maxlength="80">
                         <div class="adp_active_indicator">${activeIndicator}</div>
                     </div>
-                    <div class="flex-container" style="flex: none; gap: 5px;">
+                    <div class="flex-container adp_actions">
                         <div class="menu_button menu_button_icon adp_use_btn" data-index="${index}" ${isActive ? 'style="opacity: 0.5;" title="Already active"' : ""}>
                             <i class="fa-solid fa-arrow-up"></i>
                             <span>Use</span>
@@ -761,6 +766,7 @@ function updateFieldList(container, field, fieldData) {
                             <i class="fa-solid fa-copy"></i>
                             <span>Duplicate</span>
                         </div>
+                        ${field.scope === "persona" ? renderPersonaLinkButton(field, entry) : ""}
                         <div class="menu_button menu_button_icon adp_delete_btn" data-index="${index}">
                             <i class="fa-solid fa-trash"></i>
                             <span>Delete</span>
@@ -802,6 +808,20 @@ function updateFieldList(container, field, fieldData) {
     });
   });
 
+  listContainer.querySelectorAll(".adp_link_btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await togglePersonaEntryLink(field, button.dataset.entryId);
+      } catch (error) {
+        console.error(`${LOG_PREFIX} linking failed`, error);
+        toastr.error("Could not link this description.");
+      } finally {
+        updateFieldList(container, field, fieldData);
+      }
+    });
+  });
+
   listContainer.querySelectorAll(".adp_duplicate_btn").forEach((button) => {
     button.addEventListener("click", (event) => {
       const index = Number(event.currentTarget.dataset.index);
@@ -832,6 +852,7 @@ function updateFieldList(container, field, fieldData) {
 
       fieldData.splice(index, 1);
       saveFieldData(field, fieldData);
+      if (field.scope === "persona") applyLinkedPersonaDescription();
       updateFieldList(container, field, fieldData);
     });
   });
@@ -887,6 +908,9 @@ function setupFieldMonitoring(container, field, fieldData) {
 }
 
 function createPopupContent(field) {
+  if (field.scope === "persona") {
+    field = { ...field, personaKey: user_avatar };
+  }
   let fieldData = getFieldData(field);
   let currentValue = getCurrentField(field);
 
@@ -902,6 +926,16 @@ function createPopupContent(field) {
   const ownerName = getFieldOwnerName(field);
   const container = document.createElement("div");
   container.className = "flex-container flexFlowColumn adp_popup";
+  if (field.scope === "persona") {
+    const guardOwner = (event) => {
+      if (field.personaKey === user_avatar) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      toastr.info("Reopen alternate descriptions for the selected persona.");
+    };
+    container.addEventListener("click", guardOwner, true);
+    container.addEventListener("input", guardOwner, true);
+  }
 
   container.innerHTML = `
         <div class="flex-container justifySpaceBetween alignItemsCenter">
@@ -958,7 +992,7 @@ function createButton(field) {
     getContext().callPopup(popupContent, "text", "", {
       wide: true,
       large: true,
-    });
+    }).finally(() => popupContent.remove());
   });
   return button;
 }
@@ -1039,6 +1073,12 @@ function injectPersonaButton() {
 }
 
 function injectButtons() {
+  if (!ensureSettings().enablePersonaFields) {
+    document.querySelectorAll(".adp_persona_alt_descriptions_button").forEach((button) => button.remove());
+  }
+  if (!ensureSettings().enableCharacterFields) {
+    document.querySelectorAll('[class*="adp_character_"]').forEach((button) => button.remove());
+  }
   characterFieldConfigs.forEach(injectCharacterButton);
   injectPersonaButton();
 }
@@ -1076,6 +1116,7 @@ function addSettingsUi() {
   const bindCheckbox = (id, key) => {
     block.querySelector(id)?.addEventListener("change", (event) => {
       settings[key] = event.target.checked;
+      if (key === "enablePersonaFields") applyLinkedPersonaDescription();
       saveSettingsDebounced();
       injectButtons();
     });
@@ -1240,7 +1281,41 @@ jQuery(() => {
   eventSource.on?.(event_types.PERSONA_CHANGED, reinject);
   eventSource.on?.(event_types.PERSONA_UPDATED, reinject);
 
-  const observer = new MutationObserver(() => injectPersonaButton());
+  eventSource.on(event_types.APP_READY, () => {
+    // Native chat selection finishes before the alternate is resolved.
+    eventSource.makeLast(event_types.CHAT_CHANGED, applyLinkedPersonaDescription);
+    eventSource.on(event_types.PERSONA_CHANGED, applyLinkedPersonaDescription);
+    applyLinkedPersonaDescription();
+  });
+  eventSource.on(event_types.PERSONA_DELETED, ({ avatarId }) => {
+    delete ensureSettings().personas[avatarId];
+    saveSettingsDebounced();
+  });
+  eventSource.on(event_types.CHARACTER_RENAMED, (oldAvatar, newAvatar) => {
+    for (const [personaKey, persona] of Object.entries(ensureSettings().personas)) {
+      if (persona.characterLinks?.[oldAvatar]) {
+        persona.characterLinks[newAvatar] = persona.characterLinks[oldAvatar];
+        delete persona.characterLinks[oldAvatar];
+        for (const connection of power_user.persona_descriptions?.[personaKey]?.connections || []) {
+          if (connection.type === "character" && connection.id === oldAvatar) connection.id = newAvatar;
+        }
+      }
+    }
+    saveSettingsDebounced();
+  });
+  eventSource.on(event_types.CHARACTER_DELETED, ({ character }) => {
+    for (const persona of Object.values(ensureSettings().personas)) {
+      if (persona.characterLinks) delete persona.characterLinks[character.avatar];
+    }
+    saveSettingsDebounced();
+  });
+
+  const observer = new MutationObserver(() => {
+    injectPersonaButton();
+    if (appliedPersonaLink && !hasNativePersonaConnection(
+      appliedPersonaLink.personaKey, appliedPersonaLink.avatar,
+    )) applyLinkedPersonaDescription();
+  });
   observer.observe(document.body, { childList: true, subtree: true });
 
   console.log(`${LOG_PREFIX} loaded`);

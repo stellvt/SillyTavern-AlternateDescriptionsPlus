@@ -1,12 +1,8 @@
 # SillyTavern Alternate Descriptions Plus
 
-_A fork / functional extension of **SillyTavern-AlternateDescriptions**_
-
 ## Overview
 
-A SillyTavern extension that allows you to save and manage multiple versions of supported text fields.
-
-It follows the original Alternate Descriptions workflow and extends it with support for **user persona description** alternates.
+Save character field variants and persona descriptions, then select the text to use.
 
 **Supported Character Fields**: Description, Personality, Scenario, Example Dialogue, Main Prompt, Post-History Instructions  
 **Supported Persona Fields**: Persona Description
@@ -19,7 +15,7 @@ It follows the original Alternate Descriptions workflow and extends it with supp
 - **Token counting** - Shows token count for each alternate
 - **Duplicate + quick save** - Duplicate an entry or save current field content in one click
 - **Slash command support** - Switch alternates via slash commands
-- **Compatibility-first** - Character field storage stays compatible with the original Alternate Descriptions format
+- **Character links** - Choose a persona description for each character through native Persona Connections
 
 ## Installation
 
@@ -41,6 +37,20 @@ The extension adds `Alt. ...` buttons near supported fields.
 - **Duplicate entries**: Use **Duplicate**
 - **Delete entries**: Use **Delete**
 - **Edit entries**: Change title/content directly in the popup
+
+### Link a persona description to a character
+
+1. Open a character chat and select a persona.
+2. Open **Alt. Persona Descriptions**.
+3. Click **Link to Character** beside the description to use.
+
+The button creates a native Persona Connection and applies that alternate whenever the character opens with this persona selected. SillyTavern controls persona selection, including chat locks and multiple connected personas. Each persona can have one linked alternate per character.
+
+Automatic selection preserves the persona's default description for characters without a linked alternate. **Use** and `/altpersona` save the chosen text as the persona's default description. Editing the main persona description also saves the default; edit an alternate in this popup to change its saved text.
+
+**Unlink from Character** removes the alternate assignment and restores the default description. The native Persona Connection remains available in **Connections**. Removing that native connection also stops automatic alternate selection. Duplicates have no links; deleting an alternate removes its assignments.
+
+Links require an individual character chat. Disabling persona alternates restores the default description and pauses automatic selection.
 
 ### Slash Command Usage
 
@@ -77,11 +87,11 @@ Example:
 
 If `name` is omitted, a random alternate is selected.
 
-## Important Notes
+## Browser checks
 
-- **Manual saving in editor still applies**: switching alternates changes the current field content in the UI
-- **Warning system**: confirmation dialogs help prevent accidental overwrite of unsaved text
-- **Overwrite behavior**: using an alternate replaces current content in that field
+From this extension directory inside SillyTavern, run `npm ci`, `npx playwright install chromium`, and `npm run test:e2e`. The runner starts a separate local server on port 8018 with disposable personas, characters, and settings. Set `ADP_TEST_PORT` to choose another port. Results, screenshots, and a Playwright trace are saved under `test-results/`.
+
+The extension uses the persona APIs in SillyTavern 1.18.0.
 
 ## Credits
 

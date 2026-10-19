@@ -57,8 +57,23 @@
 }
 
 .adp_title_wrap {
-    width: 40%;
-    min-width: 220px;
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.adp_actions {
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.adp_link_btn[aria-pressed="true"] {
+    border-color: #28a745;
+}
+
+.adp_link_btn:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 .adp_field_title {

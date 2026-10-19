@@ -1,0 +1,7 @@
+{
+  "name": "sillytavern-alternate-descriptions-plus",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:e2e": "node tests/browser.e2e.mjs" },
+  "devDependencies": { "playwright": "1.58.2" }
+}
